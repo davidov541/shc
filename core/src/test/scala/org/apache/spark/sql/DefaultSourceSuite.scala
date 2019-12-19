@@ -17,6 +17,10 @@
 
 package org.apache.spark.sql
 
+import scala.collection.JavaConversions._
+
+import org.apache.hadoop.hbase.util.Bytes
+import org.apache.hadoop.hbase.TableName
 import org.apache.spark.sql.execution.datasources.hbase.Logging
 import org.apache.spark.sql.execution.datasources.hbase.{HBaseRelation, HBaseTableCatalog}
 import org.apache.spark.sql.functions._
@@ -75,6 +79,48 @@ class DefaultSourceSuite extends SHC with Logging {
     HBaseRelation(Map(HBaseTableCatalog.tableCatalog->cat),None)(sqlContext)
   }
 
+  def defineCatalog(tName: String) = s"""{
+                                         |"table":{"namespace":"default", "name":"$tName"},
+                                         |"rowkey":"key",
+                                         |"columns":{
+                                              |"col0":{"cf":"rowkey", "col":"key", "type":"string"},
+                                              |"col1":{"cf":"cf1", "col":"col1", "type":"boolean"},
+                                              |"col2":{"cf":"cf2", "col":"col2", "type":"double"},
+                                              |"col3":{"cf":"cf3", "col":"col3", "type":"float"},
+                                              |"col4":{"cf":"cf4", "col":"col4", "type":"int"},
+                                              |"col5":{"cf":"cf5", "col":"col5", "type":"bigint"},
+                                              |"col6":{"cf":"cf6", "col":"col6", "type":"smallint"},
+                                              |"col7":{"cf":"cf7", "col":"col7", "type":"string"},
+                                              |"col8":{"cf":"cf8", "col":"col8", "type":"tinyint"}
+                                            |}
+                                         |}""".stripMargin
+
+  def persistDataInHBase(cat: String, data: Seq[HBaseRecord], options: Map[String, String] = Map.empty): Unit = {
+    val sql = sqlContext
+    import sql.implicits._
+    sc.parallelize(data).toDF.write
+      .options(Map(
+        HBaseTableCatalog.newTable -> "5",
+        HBaseTableCatalog.tableCatalog -> cat
+      ) ++ options)
+      .format("org.apache.spark.sql.execution.datasources.hbase")
+      .save()
+  }
+
+
+  def testDistribution(tableName: String, minimumValue: String, maximumValue: String): Boolean = {
+    val admin = htu.getConnection().getAdmin()
+    val regions = admin.getTableRegions(TableName.valueOf(tableName))
+    val minimumBytes = Bytes.toBytes(minimumValue)
+    val maximumBytes = Bytes.toBytes(maximumValue)
+
+    val minimumRegion = regions.filter(r => r.containsRow(minimumBytes)).head
+    val maximumRegion = regions.filter(r => r.containsRow(maximumBytes)).head
+
+    minimumRegion.getRegionName() != maximumRegion.getRegionName()
+  }
+
+
   test("populate table") {
     //createTable(tableName, columnFamilies)
     val sql = sqlContext
@@ -87,6 +133,35 @@ class DefaultSourceSuite extends SHC with Logging {
       Map(HBaseTableCatalog.tableCatalog -> catalog, HBaseTableCatalog.newTable -> "5"))
       .format("org.apache.spark.sql.execution.datasources.hbase")
       .save()
+  }
+
+  test("population distrubtion for alphabet") {
+    val sql = sqlContext
+    import sql.implicits._
+
+    val rawData = "acegikmoq".permutations.toList
+    val data = rawData.map { i =>
+      HBaseRecord(5, i)
+    }
+    persistDataInHBase(catalog, data)
+    assert(testDistribution(tableName, rawData.min(Ordering.String), rawData.max(Ordering.String)))
+  }
+
+  test("population distrubtion for numbers") {
+    val sql = sqlContext
+    import sql.implicits._
+
+    val numericTable = "numericTestTable"
+    val numericCatalog = defineCatalog(numericTable)
+    val rawData = (1 to 100000).map(_.toString).toList
+    val minValue = rawData.min(Ordering.String)
+    val maxValue = rawData.max(Ordering.String)
+    val data = rawData.map { i =>
+      HBaseRecord(5, i)
+    }
+    val options = Map(HBaseTableCatalog.minRegionSplit -> minValue, HBaseTableCatalog.maxRegionSplit -> maxValue)
+    persistDataInHBase(numericCatalog, data, options)
+    assert(testDistribution(numericTable, minValue, maxValue))
   }
 
   test("empty column") {

@@ -149,8 +149,9 @@ case class HBaseRelation(
           tableDesc.addFamily(cf)
         }
 
-        val startKey = catalog.shcTableCoder.toBytes("aaaaaaa")
-        val endKey = catalog.shcTableCoder.toBytes("zzzzzzz")
+
+        val startKey = catalog.shcTableCoder.toBytes(catalog.splitRange._1)
+        val endKey = catalog.shcTableCoder.toBytes(catalog.splitRange._2)
         val splitKeys = Bytes.split(startKey, endKey, catalog.numReg - 3)
         admin.createTable(tableDesc, splitKeys)
         val r = connection.getRegionLocator(tName).getAllRegionLocations
